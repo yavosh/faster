@@ -41,6 +41,9 @@ faster -simple         # just the download number in Mbps (for scripts)
 | `-bytes`   | `26214400` | Payload size per request in bytes                     |
 | `-timeout` | `30s`   | Max duration per measurement                             |
 
+`-conns`, `-bytes`, and `-timeout` must be greater than zero.
+JSON output contains one object per line, suitable for JSON Lines files.
+
 ### Examples
 
 ```sh
@@ -66,6 +69,10 @@ By default `faster` reports the **steady-state** rate (what the live line settle
 
 - This relies on an **unofficial**, undocumented endpoint that can change without notice.
 - Numbers are in **megabits per second** (Mbps).
+- Latency probes share a five-second deadline. Failed probes do not prevent throughput measurements.
+- Transfer workers stop after three consecutive failures, with delays of 100 ms and 200 ms between attempts.
+- Invalid options, exhausted retries, cancellation, and measurements without transferred data produce a nonzero exit status.
+- The final speed includes the last partial sampling interval, including measurements shorter than 200 ms.
 
 ## License
 

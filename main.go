@@ -21,6 +21,19 @@ type options struct {
 	timeout time.Duration
 }
 
+func (o options) validate() error {
+	if o.conns < 1 {
+		return fmt.Errorf("-conns must be greater than zero")
+	}
+	if o.bytes < 1 {
+		return fmt.Errorf("-bytes must be greater than zero")
+	}
+	if o.timeout <= 0 {
+		return fmt.Errorf("-timeout must be greater than zero")
+	}
+	return nil
+}
+
 // rate returns the bytes/sec to report for a result: the cumulative average
 // with -avg, otherwise the smoothed steady-state rate (matching the live line).
 func (o options) rate(r Result) float64 {
@@ -49,10 +62,6 @@ func main() {
 	flag.DurationVar(&opt.timeout, "timeout", 30*time.Second, "max duration per measurement")
 	flag.Parse()
 
-	if opt.bytes < 1 {
-		opt.bytes = defaultChunkBytes
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -63,6 +72,9 @@ func main() {
 }
 
 func run(ctx context.Context, opt options) error {
+	if err := opt.validate(); err != nil {
+		return err
+	}
 	c := &http.Client{
 		Timeout: 0, // per-request deadlines come from ctx
 		Transport: &http.Transport{
@@ -96,22 +108,31 @@ func run(ctx context.Context, opt options) error {
 		lat = d
 	}
 
-	dl := runMeasure(ctx, c, targets, Download, opt, quiet)
+	dl, err := runMeasure(ctx, c, targets, Download, opt, quiet)
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
 
 	var ul Result
 	if opt.upload {
-		ul = runMeasure(ctx, c, targets, Upload, opt, quiet)
+		ul, err = runMeasure(ctx, c, targets, Upload, opt, quiet)
+		if err != nil {
+			return fmt.Errorf("upload: %w", err)
+		}
 	}
 
 	return report(opt, client, dl, ul, lat)
 }
 
 // runMeasure drives one measurement, rendering a live line unless quiet.
-func runMeasure(ctx context.Context, c *http.Client, targets []Target, dir Direction, opt options, quiet bool) Result {
+func runMeasure(ctx context.Context, c *http.Client, targets []Target, dir Direction, opt options, quiet bool) (Result, error) {
 	progress := make(chan sample, 8)
-	resCh := make(chan Result, 1)
+	var res Result
+	errCh := make(chan error, 1)
 	go func() {
-		resCh <- measure(ctx, c, targets, dir, opt.conns, opt.bytes, opt.timeout, progress)
+		var err error
+		res, err = measure(ctx, c, targets, dir, opt.conns, opt.bytes, opt.timeout, progress)
+		errCh <- err
 	}()
 
 	label := "Download"
@@ -123,11 +144,16 @@ func runMeasure(ctx context.Context, c *http.Client, targets []Target, dir Direc
 			fmt.Fprintf(os.Stderr, "\r%s: %8.2f Mbps", label, mbps(s.BytesPS))
 		}
 	}
-	res := <-resCh
+	if err := <-errCh; err != nil {
+		if !quiet {
+			fmt.Fprintln(os.Stderr)
+		}
+		return res, err
+	}
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "\r%s: %8.2f Mbps\n", label, mbps(opt.rate(res)))
 	}
-	return res
+	return res, nil
 }
 
 func report(opt options, client Client, dl, ul Result, lat time.Duration) error {
@@ -144,7 +170,6 @@ func report(opt options, client Client, dl, ul Result, lat time.Duration) error 
 			out.LatencyMs = round2(float64(lat.Microseconds()) / 1000)
 		}
 		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
 		return enc.Encode(out)
 	case opt.simple:
 		fmt.Printf("%.2f\n", mbps(opt.rate(dl)))
