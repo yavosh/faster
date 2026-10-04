@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -106,19 +107,28 @@ func getString(ctx context.Context, c *http.Client, u string) (string, error) {
 	return string(b), err
 }
 
+// requestError omits request URLs, which may contain API tokens.
+func requestError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
+	}
+	return err
+}
+
 func getBytes(ctx context.Context, c *http.Client, u string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid API request")
 	}
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, requestError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", u, resp.Status)
+		return nil, fmt.Errorf("HTTP status %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
 }
